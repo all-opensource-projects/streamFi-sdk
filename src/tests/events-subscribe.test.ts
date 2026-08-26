@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { xdr } from '@stellar/stellar-sdk';
 
 const mockGetEvents = vi.hoisted(() => vi.fn());
+const mockGetLatestLedger = vi.hoisted(() => vi.fn());
 
 vi.mock('@stellar/stellar-sdk', async () => {
   const actual = await vi.importActual<typeof import('@stellar/stellar-sdk')>('@stellar/stellar-sdk');
@@ -14,6 +15,7 @@ vi.mock('@stellar/stellar-sdk', async () => {
       // arrow-function implementation and returning its object as the instance.
       Server: class {
         getEvents = mockGetEvents;
+        getLatestLedger = mockGetLatestLedger;
       },
     },
   };
@@ -23,6 +25,8 @@ describe('subscribeToStream', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     mockGetEvents.mockReset();
+    mockGetLatestLedger.mockReset();
+    mockGetLatestLedger.mockResolvedValue({ id: 'ledger-x', sequence: 100, protocolVersion: '20' });
   });
 
   afterEach(() => {
@@ -52,14 +56,51 @@ describe('subscribeToStream', () => {
     sub.unsubscribe();
   });
 
-  it('does not send startLedger on the first poll', async () => {
+  it('seeds startLedger from getLatestLedger before the first poll', async () => {
     mockGetEvents.mockResolvedValue({ events: [] });
     const { subscribeToStream } = await import('../events.js');
 
     const sub = subscribeToStream('http://localhost:8000', 'CSTREAM', {});
     await vi.waitFor(() => expect(mockGetEvents).toHaveBeenCalled());
-    expect(mockGetEvents.mock.calls[0]?.[0]).not.toHaveProperty('startLedger');
+    expect(mockGetLatestLedger).toHaveBeenCalledTimes(1);
+    expect(mockGetEvents.mock.calls[0]?.[0]).toHaveProperty('startLedger', 100);
     sub.unsubscribe();
+  });
+
+  it('does not re-fetch getLatestLedger on later polls once a cursor is established', async () => {
+    mockGetEvents.mockResolvedValue({ events: [], cursor: 'page-2', latestLedger: 100 });
+    const { subscribeToStream } = await import('../events.js');
+
+    const sub = subscribeToStream('http://localhost:8000', 'CSTREAM', { pollInterval: 1000 });
+    await vi.waitFor(() => expect(mockGetEvents).toHaveBeenCalledTimes(1));
+
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.waitFor(() => expect(mockGetEvents).toHaveBeenCalledTimes(2));
+
+    expect(mockGetLatestLedger).toHaveBeenCalledTimes(1);
+    sub.unsubscribe();
+  });
+
+  it('retries seeding startLedger on the next poll if getLatestLedger itself fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockGetLatestLedger
+      .mockRejectedValueOnce(new Error('rpc unavailable'))
+      .mockResolvedValue({ id: 'ledger-x', sequence: 200, protocolVersion: '20' });
+    mockGetEvents.mockResolvedValue({ events: [] });
+    const { subscribeToStream } = await import('../events.js');
+
+    const sub = subscribeToStream('http://localhost:8000', 'CSTREAM', { pollInterval: 1000 });
+    await vi.waitFor(() => expect(mockGetLatestLedger).toHaveBeenCalledTimes(1));
+    // The failed seed must not have reached getEvents at all.
+    expect(mockGetEvents).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.waitFor(() => expect(mockGetLatestLedger).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(mockGetEvents).toHaveBeenCalledTimes(1));
+    expect(mockGetEvents.mock.calls[0]?.[0]).toHaveProperty('startLedger', 200);
+
+    sub.unsubscribe();
+    warn.mockRestore();
   });
 
   it('uses the RPC cursor to continue polling when a ledger spans multiple pages', async () => {
