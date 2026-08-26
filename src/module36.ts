@@ -1,5 +1,5 @@
 import type { StreamInfo } from './types/index.js';
-import { streamProgress, withdrawableLocal } from './utils.js';
+import { streamProgress, normalizeProgress, withdrawableLocal } from './utils.js';
 
 export interface Module36Config {
   /** Maximum number of snapshot diffs retained in the LRU cache */
@@ -38,10 +38,6 @@ export interface Module36Metrics {
    */
   measuredSpeedupPercent: number | null;
   averageExecutionTimeMs: number;
-}
-
-function normalizeProgress(value: number): number {
-  return Number.isNaN(value) ? 0.5 : value;
 }
 
 function statusKey(stream: StreamInfo): string {

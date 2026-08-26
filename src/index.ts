@@ -49,6 +49,7 @@ export {
   calculateRate,
   calculateYield,
   streamProgress,
+  normalizeProgress,
   withdrawableLocal,
   bigintSafeStringify,
 } from './utils.js';

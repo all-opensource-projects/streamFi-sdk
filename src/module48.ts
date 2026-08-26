@@ -1,5 +1,5 @@
 import type { StreamInfo } from './types/index.js';
-import { withdrawableLocal, streamProgress } from './utils.js';
+import { withdrawableLocal, streamProgress, normalizeProgress } from './utils.js';
 
 export interface Module48Config {
   /** Maximum number of calculated results to keep in the fast lookup cache */
@@ -112,10 +112,7 @@ export class Module48 {
     this.cacheMisses++;
     const withdrawable = withdrawableLocal(item.stream, nowSec);
 
-    // `streamProgress` returns NaN for open-ended streams (endTime === 0);
-    // treat that as the midpoint (0.5), matching Module36's normalisation.
-    const rawProgress = streamProgress(item.stream, nowSec);
-    const progress = Number.isNaN(rawProgress) ? 0.5 : rawProgress;
+    const progress = normalizeProgress(streamProgress(item.stream, nowSec));
 
     const computedAt = nowSec;
 
