@@ -13,6 +13,8 @@ All notable changes are documented here. Format based on [Keep a Changelog](http
 - Direct unit tests for `resolvePassphrase()` covering explicit passphrase present/blank, named network known/unknown, and neither-provided branches (#462)
 - `StreamsModule.forceCancel()` — wraps the contract's `force_cancel()` so a recipient can force-cancel a stream paused beyond the 30-day threshold (previously only a prose TODO; `StreamErrorCode.PauseThresholdNotMet` is now reachable through the SDK) (#453)
 - `StreamsModule.transferRecipient()` — wraps the contract's `transfer_recipient()` so the current recipient can reassign the recipient role (previously only a prose TODO) (#454)
+- `NonceManager` (the bigint-based, queue-with-cancellation implementation) is now exported from the package entry point, along with its `NonceLock`/`NonceManagerOptions` types. Previously neither `NonceManager` implementation was reachable outside SDK source (#483).
+- `subscribeToStream()` / `client.streams.subscribe()` now accept `maxBackoffMs` and `maxConsecutiveFailures` options controlling the new exponential-backoff-with-cutoff polling behaviour (#485).
 
 ### Performance
 - `FactoryModule.streamAddress()` now caches resolved stream→contract-address lookups in-memory, since the mapping is fixed at stream creation and never changes. Eliminates redundant RPC round trips on every `StreamsModule` read/write operation (`get`, `withdraw`, `cancel`, `pause`, `resume`, `topUp`, `clawback`) and on each page of `list()`, which previously re-resolved the same address for every stream on every call.
@@ -21,6 +23,7 @@ All notable changes are documented here. Format based on [Keep a Changelog](http
 ### Removed
 - Removed orphaned `RoomManager` (`src/room-manager.js`) and `src/server.js` WebSocket server, along with unused `dotenv` production dependency (#442).
 - Removed unused `GraphSyncAgent` (`src/graph-sync-agent.ts`) dead code (#443).
+- **Breaking (internal only — never exported):** Removed the duplicate, number-based `NonceManager` (`src/nonce-manager.ts`), which stored nonces as a JS `number` and so couldn't represent Stellar int64 sequence numbers above 2^53. `src/nonce/NonceManager.ts`'s bigint-based implementation is now the only `NonceManager` and is exported from the package entry point (#483).
 
 ### Documentation
 - Removed non-existent `contracts/*-abi.ts` entry from `docs/architecture.md` module map (#440).
@@ -29,8 +32,12 @@ All notable changes are documented here. Format based on [Keep a Changelog](http
 - Added a "Wallet Adapters" API reference section documenting `KeypairWalletAdapter`.
 - Documented `StreamBuilder.ratePerSecond()` and `StreamBuilder.submit()` (with full `SubmitOptions`) in `docs/api.md`, previously omitted from the Fluent Builder reference (#463).
 - Documented `ConduitClient`'s `pauseStream()`, `unpauseStream()`, and `setWallet()` convenience methods in `docs/api.md`, and fixed `setWallet()`'s JSDoc block, which had been orphaned above `pauseStream()`/`unpauseStream()` and left `setWallet()` itself undocumented.
+- Documented `subscribe()`'s `onError`, `maxBackoffMs`, and `maxConsecutiveFailures` options and the `getLatestLedger()`-seeded first poll in `docs/api.md` (#484, #485), and removed the stale "internal, not exported" note from the `NonceManager` reference now that it's a public export (#483).
 
 ### Fixed
+- `subscribeToStream()` (`client.streams.subscribe()`) now seeds `startLedger` from `server.getLatestLedger()` before its first `getEvents()` call. Previously the first poll omitted `startLedger` entirely (it started at `0` and was only included once `> 0`), so Soroban RPC's `getEvents` rejected every call, the rejection was swallowed, and the subscription never delivered a single event (#484).
+- `subscribeToStream()` now backs off exponentially (`pollInterval * 2^(consecutiveFailures - 1)`, capped at the new `maxBackoffMs`) after consecutive polling failures instead of retrying at a fixed interval forever, and stops polling once `maxConsecutiveFailures` consecutive failures have occurred instead of spinning against a permanently-broken RPC endpoint indefinitely (#485).
+- `Module36` and `Module48` no longer each maintain their own copy of the "open-ended stream progress (`NaN`) → `0.5`" normalization. It's now a single shared `normalizeProgress()` in `src/utils.ts`, closing the gap where the two modules' progress calculations could in principle drift out of sync at the edges (#482).
 - **Breaking:** `RateLimitError.fromRpcError()` no longer conflates HTTP 503 (Service Unavailable) with 429 (Too Many Requests). A 503 is now reported as a distinct exported `RpcServiceUnavailableError`, and the internal RPC retry wrapper only backoff-retries genuine `RateLimitError`s — a 503 fails fast so consumers can fail over to a different RPC URL instead of retrying a dead endpoint (#456).
 - `catchNetworkError()` no longer reclassifies *any* `TypeError` whose text happens to contain `fetch`/`connect`/`network`/etc. It now only reclassifies errors that are provably transport failures: the canonical fetch/axios network messages (`fetch failed`, `Failed to fetch`, `Network Error`, `Load failed`) or an error (or its nested `cause`) carrying a network errno code such as `ECONNREFUSED`/`ENOTFOUND`/`ERR_NETWORK`. A programming `TypeError` (e.g. `Cannot read properties of undefined (reading 'connect')`) is re-thrown as-is instead of being masked as a network outage (#457).
 - `NonceManager` now throws a descriptive error for an unparseable nonce string (e.g. `startNonce: 'not-a-number'`) instead of silently coercing it to `0n`, which masked caller bugs as an explicit zero (#458).
