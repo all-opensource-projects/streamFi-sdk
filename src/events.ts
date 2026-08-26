@@ -83,7 +83,8 @@ export function subscribeToStream(
 ): Subscription {
   const server       = createRpcServer(rpcUrl);
   const pollInterval = handlers.pollInterval ?? 5000;
-  let   startLedger  = 0;  // fallback cursor for the initial poll
+  let   startLedger  = 0;
+  let   ledgerSeeded = false; // true once startLedger holds a real ledger sequence
   let   cursor: string | undefined;
   let   stopped      = false;
   let   timer: ReturnType<typeof setTimeout> | undefined;
@@ -92,8 +93,20 @@ export function subscribeToStream(
     if (stopped) return;
 
     try {
+      if (!ledgerSeeded && !cursor) {
+        // Soroban RPC's getEvents requires a start ledger; the very first
+        // call has no cursor to derive one from yet, so seed it from the
+        // chain's current ledger. If this itself fails, fall through to the
+        // outer catch (below) and retry on the next poll instead of leaving
+        // startLedger at 0 forever, which would make every getEvents call
+        // fail identically (see #484).
+        const latest = await server.getLatestLedger();
+        startLedger = latest.sequence;
+        ledgerSeeded = true;
+      }
+
       const response = await server.getEvents({
-        ...(cursor ? { cursor } : (startLedger > 0 ? { startLedger } : {})),
+        ...(cursor ? { cursor } : { startLedger }),
         filters: [{
           type:        'contract',
           contractIds: [streamAddress],
