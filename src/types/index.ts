@@ -132,10 +132,25 @@ export interface StreamEventHandlers {
   onResume?:   (e: ResumeEvent)    => void;
   onTopUp?:    (e: TopUpEvent)     => void;
   onClawback?: (e: ClawbackEvent)  => void;
-  /** Called when an event polling request fails. Polling continues afterward. */
+  /**
+   * Called when an event polling request fails. Polling continues
+   * afterward — unless this failure reaches `maxConsecutiveFailures`, in
+   * which case this is the last call before the subscription stops.
+   */
   onError?:    (error: Error)      => void;
   /** Polling interval in ms; default 5000 */
   pollInterval?: number;
+  /**
+   * Upper bound (ms) for the exponential backoff delay applied between
+   * retries after consecutive polling failures. Default 60000.
+   */
+  maxBackoffMs?: number;
+  /**
+   * Number of consecutive polling failures after which the subscription
+   * gives up and stops polling (the timer is not rescheduled). A
+   * successful poll resets the counter. Default 10.
+   */
+  maxConsecutiveFailures?: number;
 }
 
 export interface Subscription {

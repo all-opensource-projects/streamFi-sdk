@@ -81,12 +81,15 @@ export function subscribeToStream(
   streamAddress: string,
   handlers:      StreamEventHandlers,
 ): Subscription {
-  const server       = createRpcServer(rpcUrl);
-  const pollInterval = handlers.pollInterval ?? 5000;
-  let   startLedger  = 0;
-  let   ledgerSeeded = false; // true once startLedger holds a real ledger sequence
+  const server                 = createRpcServer(rpcUrl);
+  const pollInterval           = handlers.pollInterval ?? 5000;
+  const maxBackoffMs           = handlers.maxBackoffMs ?? 60_000;
+  const maxConsecutiveFailures = handlers.maxConsecutiveFailures ?? 10;
+  let   startLedger            = 0;
+  let   ledgerSeeded           = false; // true once startLedger holds a real ledger sequence
   let   cursor: string | undefined;
-  let   stopped      = false;
+  let   consecutiveFailures    = 0;
+  let   stopped                = false;
   let   timer: ReturnType<typeof setTimeout> | undefined;
 
   async function poll() {
@@ -131,10 +134,14 @@ export function subscribeToStream(
           startLedger = response.latestLedger + 1;
         }
       }
+
+      consecutiveFailures = 0;
     } catch (err) {
-      // Swallow polling errors; the subscription continues
+      // Swallow polling errors; the subscription continues (unless the
+      // consecutive-failure cutoff below is reached).
       const error = err instanceof Error ? err : new Error(String(err));
       console.warn('[conduit-sdk] event polling error:', error);
+      consecutiveFailures++;
 
       // A consumer error handler must not stop future polling.
       try {
@@ -142,9 +149,26 @@ export function subscribeToStream(
       } catch (handlerError) {
         console.warn('[conduit-sdk] event polling onError handler error:', handlerError);
       }
+
+      if (consecutiveFailures >= maxConsecutiveFailures) {
+        console.warn(
+          `[conduit-sdk] event polling stopped after ${consecutiveFailures} consecutive failures`,
+        );
+        stopped = true;
+        return;
+      }
     }
 
-    if (!stopped) timer = setTimeout(poll, pollInterval);
+    if (!stopped) {
+      // Exponential backoff: 1x pollInterval after the 1st consecutive
+      // failure, 2x after the 2nd, 4x after the 3rd, etc., capped at
+      // maxBackoffMs. A successful poll resets consecutiveFailures to 0,
+      // which brings the delay back down to the plain pollInterval.
+      const delay = consecutiveFailures > 0
+        ? Math.min(pollInterval * 2 ** (consecutiveFailures - 1), maxBackoffMs)
+        : pollInterval;
+      timer = setTimeout(poll, delay);
+    }
   }
 
   // Start polling immediately
