@@ -274,4 +274,127 @@ describe('subscribeToStream', () => {
     // The pending timer must be gone immediately — not merely inert.
     expect(vi.getTimerCount()).toBe(0);
   });
+
+  // ── Backoff and failure cutoff (#485) ────────────────────────────────────
+  // Previously poll() rescheduled at a fixed pollInterval no matter how many
+  // consecutive failures had occurred, and never stopped — a permanently
+  // broken RPC endpoint spun forever.
+
+  it('doubles the retry delay after each consecutive failure (exponential backoff)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockGetEvents.mockRejectedValue(new Error('rpc unavailable'));
+    const { subscribeToStream } = await import('../events.js');
+
+    const sub = subscribeToStream('http://localhost:8000', 'CSTREAM', {
+      pollInterval: 1000,
+      maxConsecutiveFailures: 100,
+    });
+    await vi.waitFor(() => expect(mockGetEvents).toHaveBeenCalledTimes(1)); // 1st failure
+
+    // Delay after 1 consecutive failure: 1x pollInterval.
+    await vi.advanceTimersByTimeAsync(999);
+    expect(mockGetEvents).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.waitFor(() => expect(mockGetEvents).toHaveBeenCalledTimes(2)); // 2nd failure
+
+    // Delay after 2 consecutive failures: 2x pollInterval.
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(mockGetEvents).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.waitFor(() => expect(mockGetEvents).toHaveBeenCalledTimes(3)); // 3rd failure
+
+    // Delay after 3 consecutive failures: 4x pollInterval.
+    await vi.advanceTimersByTimeAsync(3999);
+    expect(mockGetEvents).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.waitFor(() => expect(mockGetEvents).toHaveBeenCalledTimes(4));
+
+    sub.unsubscribe();
+    warn.mockRestore();
+  });
+
+  it('resets the backoff delay after a successful poll', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockGetEvents
+      .mockRejectedValueOnce(new Error('rpc unavailable'))
+      .mockResolvedValueOnce({ events: [] })
+      .mockRejectedValueOnce(new Error('rpc unavailable again'))
+      .mockResolvedValue({ events: [] });
+    const { subscribeToStream } = await import('../events.js');
+
+    const sub = subscribeToStream('http://localhost:8000', 'CSTREAM', { pollInterval: 1000 });
+    await vi.waitFor(() => expect(mockGetEvents).toHaveBeenCalledTimes(1)); // fail
+
+    await vi.advanceTimersByTimeAsync(1000); // delay after 1 failure = pollInterval
+    await vi.waitFor(() => expect(mockGetEvents).toHaveBeenCalledTimes(2)); // success — resets
+
+    await vi.advanceTimersByTimeAsync(1000); // success reschedules at plain pollInterval
+    await vi.waitFor(() => expect(mockGetEvents).toHaveBeenCalledTimes(3)); // fail again (fresh count = 1)
+
+    // A single failure after a reset must delay by pollInterval again, not
+    // continue the previous backoff sequence.
+    await vi.advanceTimersByTimeAsync(999);
+    expect(mockGetEvents).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.waitFor(() => expect(mockGetEvents).toHaveBeenCalledTimes(4));
+
+    sub.unsubscribe();
+    warn.mockRestore();
+  });
+
+  it('caps the backoff delay at maxBackoffMs', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockGetEvents.mockRejectedValue(new Error('rpc unavailable'));
+    const { subscribeToStream } = await import('../events.js');
+
+    const sub = subscribeToStream('http://localhost:8000', 'CSTREAM', {
+      pollInterval: 1000,
+      maxBackoffMs: 2500,
+      maxConsecutiveFailures: 100,
+    });
+    await vi.waitFor(() => expect(mockGetEvents).toHaveBeenCalledTimes(1)); // fail #1, delay 1000
+
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.waitFor(() => expect(mockGetEvents).toHaveBeenCalledTimes(2)); // fail #2, delay min(2000,2500)=2000
+
+    await vi.advanceTimersByTimeAsync(2000);
+    await vi.waitFor(() => expect(mockGetEvents).toHaveBeenCalledTimes(3)); // fail #3, delay min(4000,2500)=2500 (capped)
+
+    await vi.advanceTimersByTimeAsync(2499);
+    expect(mockGetEvents).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.waitFor(() => expect(mockGetEvents).toHaveBeenCalledTimes(4));
+
+    sub.unsubscribe();
+    warn.mockRestore();
+  });
+
+  it('stops polling after maxConsecutiveFailures consecutive failures', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const onError = vi.fn();
+    mockGetEvents.mockRejectedValue(new Error('rpc unavailable'));
+    const { subscribeToStream } = await import('../events.js');
+
+    const sub = subscribeToStream('http://localhost:8000', 'CSTREAM', {
+      pollInterval: 1000,
+      maxConsecutiveFailures: 3,
+      onError,
+    });
+
+    await vi.waitFor(() => expect(mockGetEvents).toHaveBeenCalledTimes(1)); // failure 1
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.waitFor(() => expect(mockGetEvents).toHaveBeenCalledTimes(2)); // failure 2
+    await vi.advanceTimersByTimeAsync(2000);
+    await vi.waitFor(() => expect(mockGetEvents).toHaveBeenCalledTimes(3)); // failure 3 — cutoff hit
+
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(3));
+    // No further poll should be scheduled once the cutoff is hit.
+    expect(vi.getTimerCount()).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mockGetEvents).toHaveBeenCalledTimes(3);
+
+    sub.unsubscribe();
+    warn.mockRestore();
+  });
 });
