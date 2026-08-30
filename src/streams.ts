@@ -3,7 +3,6 @@
  */
 
 import { SorobanRpc, nativeToScVal, xdr, Address, Transaction, BASE_FEE, Asset } from '@stellar/stellar-sdk';
-import type { Signer } from './signer.js';
 import type {
   ConduitConfig,
   CreateStreamParams,
@@ -19,6 +18,7 @@ import type {
   FeeEstimate,
 } from './types/index.js';
 import type { WalletAdapter } from './adapters/types.js';
+import type { Signer } from './signer.js';
 import { KeypairWalletAdapter } from './adapters/keypair.js';
 import { toStroops, calculateRate, bigintSafeStringify } from './utils.js';
 import {
@@ -80,7 +80,6 @@ import { ZERO_ADDR, DEFAULT_LIST_LIMIT, clampListLimit, USDC_ISSUER } from './co
 export class StreamsModule {
   private readonly rpcUrl:     string;
   private readonly passphrase: string;
-  private readonly callerAddr: string;
   private readonly _factory:   FactoryModule;
   private activeWallet?:       WalletAdapter;
 
@@ -111,7 +110,6 @@ export class StreamsModule {
   constructor(private readonly config: ConduitConfig) {
     this.rpcUrl     = config.rpcUrl ?? DEFAULT_RPC[config.network];
     this.passphrase = NETWORK_PASSPHRASE[config.network];
-    this.callerAddr = this._signerPublicKey();
     this._factory   = new FactoryModule(config);
 
     if (config.wallet) {
@@ -134,21 +132,11 @@ export class StreamsModule {
     return this.config.signer ?? null;
   }
 
-  private _signerPublicKey(): string {
-    if (this.activeWallet) {
-      const pk = this.activeWallet.getPublicKey();
-      if (typeof pk === 'string') return pk;
-    }
-    if (this.config.signer) return this.config.signer.publicKey();
-    if (this.config.keypair) return this.config.keypair.publicKey();
-    return ZERO_ADDR;
-  }
-
   /**
    * Resolve the caller address, handling both sync and async getPublicKey().
-   * Unlike _signerPublicKey(), this can be used when the wallet adapter
-   * returns a promise - but it MUST only be called from async contexts.
-   * Results are cached per wallet configuration and invalidated on setWallet().
+   * Safe when the wallet adapter returns a promise — but it MUST only be
+   * called from async contexts. Results are cached per wallet configuration
+   * and invalidated on setWallet().
    */
   private async _resolveCallerAddress(): Promise<string> {
     if (this._cachedCallerAddr !== null) {
@@ -543,13 +531,17 @@ export class StreamsModule {
       throw new Error(`Simulation failed: ${simResult.error}`);
     }
 
-    const resourceFee = Number(simResult.minResourceFee);
-    const cpuInstructions = Number(simResult.cost.cpuInsns);
+    // All fees are bigint stroops — consistent with FeeEstimator and the
+    // rest of the SDK — so large resource fees never lose precision to
+    // IEEE-754 rounding (see #447). `estimateRequiredFee` handles the
+    // minResourceFee/fee extraction with the same fallback used elsewhere.
+    const resourceFee = estimateRequiredFee(simResult);
+    const cpuInstructions = BigInt(simResult.cost?.cpuInsns ?? 0);
 
     return {
-      totalFee: Number(BASE_FEE) + resourceFee,
+      totalFee: BigInt(BASE_FEE) + resourceFee,
       resourceFee,
-      baseFee: Number(BASE_FEE),
+      baseFee: BigInt(BASE_FEE),
       instructions: cpuInstructions,
     };
   }
@@ -694,7 +686,7 @@ export class StreamsModule {
   // Private helpers
 
   private _ensureCanMutate(): void {
-    if (!this.activeWallet && !this.config.signer && !this.config.keypair) {
+    if (!this.activeWallet && !this._signer() && !this.config.keypair) {
       throw new Error('keypair, wallet adapter, or signer is required for mutating operations');
     }
   }
@@ -703,8 +695,9 @@ export class StreamsModule {
     if (this.activeWallet) {
       return this.activeWallet.getPublicKey();
     }
-    if (this.config.signer) {
-      return this.config.signer.publicKey();
+    const signer = this._signer();
+    if (signer) {
+      return signer.publicKey();
     }
     if (this.config.keypair) {
       return this.config.keypair.publicKey();
@@ -725,12 +718,14 @@ export class StreamsModule {
       }
       return signed;
     }
-    if (this.config.signer) {
-      const result = this.config.signer.sign(tx);
-      if (result != null) {
-        await result;
-      }
-      return tx;
+    const signer = this._signer();
+    if (signer) {
+      // A Signer may mutate `tx` in place and return void, or return a new
+      // signed Transaction. Honour the return value when it is a Transaction;
+      // returning `tx` unconditionally dropped the signature for
+      // immutable-style signers, submitting an unsigned transaction (#519).
+      const result = await signer.sign(tx);
+      return result instanceof Transaction ? result : tx;
     }
     if (this.config.keypair) {
       tx.sign(this.config.keypair);

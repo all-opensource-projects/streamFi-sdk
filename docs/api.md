@@ -212,6 +212,13 @@ const sub = client.streams.subscribe(streamId, {
 sub.unsubscribe();
 ```
 
+> The first poll seeds its start ledger from `getLatestLedger()` (Soroban RPC's
+> `getEvents` requires one); a failed seed is retried on the next poll. After a
+> polling failure the retry delay grows exponentially
+> (`pollInterval · 2^(failures−1)`, capped at `maxBackoffMs`); a successful poll
+> resets it. Once `maxConsecutiveFailures` failures occur in a row the
+> subscription stops (a final `onError` is delivered first).
+
 > **All event payload fields are decoded.** `src/events.ts`'s `dispatchEvent()` parses every
 > multi-field event from its tuple `ScVal`s: `onWithdraw` → `{ recipient, amount,
 > totalWithdrawn, remaining }`, `onCancel` → `{ sender, refundAmount, withdrawnSoFar }`,

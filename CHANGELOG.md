@@ -5,6 +5,10 @@ All notable changes are documented here. Format based on [Keep a Changelog](http
 ## [Unreleased]
 
 ### Added
+- `CAIP2_TO_NETWORK` is now exported — a single CAIP-2→network map shared by `ConduitClient`'s wallet-network check and `WalletConnectAdapter`'s construction-time validation, which previously kept independent verbatim copies (#445)
+- `NonceManager` (with its `NonceLock` / `NonceManagerOptions` types) is now exported from the package entry point; the bigint-based `src/nonce/NonceManager.ts` is the only implementation (#483)
+- `normalizeProgress(value)` utility (exported) — maps `streamProgress()`'s open-ended-stream `NaN` result to the midpoint `0.5`; `Module36` and `Module48` now share it instead of each reimplementing the check (#482)
+- `subscribe()` accepts `maxBackoffMs` (default 60000) and `maxConsecutiveFailures` (default 10) — event polling now applies exponential backoff after consecutive failures and stops against a permanently-broken endpoint (#485)
 - `StreamsModule.streamedTotal()` — read-only wrapper for `DripStream::streamed_total`, exposing the cumulative amount streamed since start regardless of withdrawals (#455)
 - `StreamsModule.estimateFee(operation)` runs a Soroban simulation for any stream operation and returns the exact estimated network fee (`FeeEstimate` with `totalFee`, `resourceFee`, `baseFee`, `instructions`) so the UI can display the fee before the user clicks "Create Stream".
 - `Module36` stream snapshot diff engine with LRU memoization for Feature #36 (#370); `getPerformanceMetrics()` reports an honest, workload-dependent measured speedup rather than a fixed percentage
@@ -20,11 +24,16 @@ All notable changes are documented here. Format based on [Keep a Changelog](http
 - `FactoryModule.streamAddress()` now caches resolved stream→contract-address lookups in-memory, since the mapping is fixed at stream creation and never changes. Eliminates redundant RPC round trips on every `StreamsModule` read/write operation (`get`, `withdraw`, `cancel`, `pause`, `resume`, `topUp`, `clawback`) and on each page of `list()`, which previously re-resolved the same address for every stream on every call.
 - `buildBatchTransactions()` (the RPC-prepared batch path) now simulates all operations in a batch concurrently instead of one at a time, cutting the wall-clock time of an N-operation batch from N sequential RPC round trips to one.
 
+### Changed
+- `StreamsModule` now routes all signer-selection logic through its private `_signer()` helper instead of touching `config.signer` directly, removing dead code (#446).
+- CAIP-2→network mapping consolidated into a single exported `CAIP2_TO_NETWORK` constant shared by `ConduitClient`'s wallet network check and `WalletConnectAdapter`'s chain validation, so the two can never disagree (#445).
+
 ### Removed
 - Removed orphaned `RoomManager` (`src/room-manager.js`) and `src/server.js` WebSocket server, along with unused `dotenv` production dependency (#442).
 - Removed unused `GraphSyncAgent` (`src/graph-sync-agent.ts`) dead code (#443).
 - **Breaking (internal only — never exported):** Removed the duplicate, number-based `NonceManager` (`src/nonce-manager.ts`), which stored nonces as a JS `number` and so couldn't represent Stellar int64 sequence numbers above 2^53. `src/nonce/NonceManager.ts`'s bigint-based implementation is now the only `NonceManager` and is exported from the package entry point (#483).
 - Removed dead `Module46` string-normalization wrapper (`src/module46.ts`) — never exported from `src/index.ts` and unreferenced elsewhere (#478).
+
 
 ### Documentation
 - Removed non-existent `contracts/*-abi.ts` entry from `docs/architecture.md` module map (#440).
@@ -48,6 +57,7 @@ All notable changes are documented here. Format based on [Keep a Changelog](http
 - `catchNetworkError()` no longer reclassifies *any* `TypeError` whose text happens to contain `fetch`/`connect`/`network`/etc. It now only reclassifies errors that are provably transport failures: the canonical fetch/axios network messages (`fetch failed`, `Failed to fetch`, `Network Error`, `Load failed`) or an error (or its nested `cause`) carrying a network errno code such as `ECONNREFUSED`/`ENOTFOUND`/`ERR_NETWORK`. A programming `TypeError` (e.g. `Cannot read properties of undefined (reading 'connect')`) is re-thrown as-is instead of being masked as a network outage (#457).
 - `NonceManager` now throws a descriptive error for an unparseable nonce string (e.g. `startNonce: 'not-a-number'`) instead of silently coercing it to `0n`, which masked caller bugs as an explicit zero (#458).
 - `StreamBuilder.build()` now stringifies a numeric `ratePerSecond` so the runtime value matches the declared `ratePerSecond?: string` return type; previously a `number` input passed through unchanged, so callers trusting the type (`.trim()`, string concatenation) hit runtime errors (#459).
+
 - `StreamsModule.withdraw()` / `topUp()` now reject `amount <= 0n` client-side (before any RPC round-trip), matching `create()`'s fail-fast validation philosophy instead of relying on the contract's `InvalidAmount` simulate+reject cycle (#451)
 - `StreamsModule.list()` no longer silently drops `recipient` when both `sender` and `recipient` are provided — it now returns the de-duplicated union of both filters (#452)
 - **Critical:** `FeeEstimator.estimateFee()` now uses `bigint` stroops instead of floating-point for fee representation, eliminating IEEE-754 precision loss. All monetary amounts in the SDK now consistently use bigint to avoid rounding errors.

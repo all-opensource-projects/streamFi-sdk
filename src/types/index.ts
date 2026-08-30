@@ -224,12 +224,12 @@ export type StreamOperation =
     };
 
 export interface FeeEstimate {
-  /** Total estimated fee in stroops */
-  totalFee: number;
-  /** Resource fee component (CPU/RAM) in stroops */
-  resourceFee: number;
-  /** Base (inclusion) fee component in stroops */
-  baseFee: number;
-  /** Estimated CPU instructions */
-  instructions: number;
+  /** Total estimated fee in stroops (bigint, per the SDK's stroops convention). */
+  totalFee: bigint;
+  /** Resource fee component (CPU/RAM) in stroops (bigint). */
+  resourceFee: bigint;
+  /** Base (inclusion) fee component in stroops (bigint). */
+  baseFee: bigint;
+  /** Estimated CPU instructions (bigint, avoids IEEE-754 precision loss on large counts). */
+  instructions: bigint;
 }

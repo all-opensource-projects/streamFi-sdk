@@ -58,6 +58,7 @@ describe('subscribeToStream', () => {
 
   it('seeds startLedger from getLatestLedger before the first poll', async () => {
     mockGetEvents.mockResolvedValue({ events: [] });
+    mockGetLatestLedger.mockResolvedValue({ id: 'l', sequence: 4242, protocolVersion: 22 });
     const { subscribeToStream } = await import('../events.js');
 
     const sub = subscribeToStream('http://localhost:8000', 'CSTREAM', {});
