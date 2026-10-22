@@ -98,6 +98,9 @@ export {
   UNKNOWN_CONTRACT_ERROR_CODE,
   parseContractError,
   ContractError,
+  mapHorizonError,
+  BadAuthError,
+  HorizonTransactionError,
 } from "./errors.js";
 export type {
   ConduitContract,
@@ -105,6 +108,7 @@ export type {
   SorobanDiagnosticInfo,
   ContractErrorContext,
   ContractErrorDiagnostic,
+  HorizonResultCodes,
 } from "./errors.js";
 export * from "./types/index.js";
 export type {
